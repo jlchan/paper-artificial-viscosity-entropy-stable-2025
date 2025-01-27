@@ -78,12 +78,11 @@ for K in [2, 4, 8, 16, 32]
         dudx = fill!(gradients[1], zero(eltype(gradients[1])))
         dudy = fill!(gradients[2], zero(eltype(gradients[2])))
 
-        C12 = 0
         (; uf, interface_flux_x, interface_flux_y) = params
         mymul!(uf, rd.Vf, u)
         @batch for i in eachindex(interface_flux_x, interface_flux_y)
-            interface_flux_x[i] = 0.5 * (uf[md.mapP[i]] - uf[i]) * md.nxJ[i] - C12 * 0.5 * (uf[md.mapP[i]] - uf[i]) * abs(md.nxJ[i])
-            interface_flux_y[i] = 0.5 * (uf[md.mapP[i]] - uf[i]) * md.nyJ[i] - C12 * 0.5 * (uf[md.mapP[i]] - uf[i]) * abs(md.nyJ[i])
+            interface_flux_x[i] = 0.5 * (uf[md.mapP[i]] - uf[i]) * md.nxJ[i] 
+            interface_flux_y[i] = 0.5 * (uf[md.mapP[i]] - uf[i]) * md.nyJ[i] 
         end
 
         (; dudr, duds) = params

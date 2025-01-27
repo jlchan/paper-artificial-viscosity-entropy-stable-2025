@@ -39,7 +39,7 @@ end
 
 
 N = 3
-rd = RefElemData(Line(), N; quad_rule_vol=gauss_quad(0,0,N+1))
+rd = RefElemData(Line(), N; quad_rule_vol=gauss_quad(0, 0, N+1))
 # rd = RefElemData(Line(), SBP(), N)
 (VX,), EToV = uniform_mesh(rd.element_type, 50)
 
@@ -53,7 +53,7 @@ tspan = (0.0, 1.8) # Shu-Osher
 
 md = MeshData(((VX,), EToV), rd)
 
-# # for density and blast wave
+# for density wave
 # init_condition = initial_condition_density_wave
 # tspan = (0.0, 10.0) # density wave
 # md = MeshData(((VX,), EToV), rd; is_periodic=true) 
@@ -112,7 +112,6 @@ function rhs!(du, u, params, t)
 end
 
 u = rd.Pq * init_condition.(rd.Vq * md.x, equations)
-# u = initial_condition.(md.x, equations)
 
 interface_flux = flux_lax_friedrichs
 # interface_flux = flux_ranocha
@@ -142,6 +141,5 @@ plot!(pad_nans(rd.Vp * md.x), pad_nans(rd.Vp * getindex.(u, 1)), linewidth=2,
       label=L"N=%$N, K=%$(md.num_elements)")
 plot!(legend=:bottomleft, xformatter=:none, yformatter=:none, dpi=500)
 plot!(dpi=500, xformatter=:none, yformatter=:none, legendfontsize=14)
-
 # plot!(xlims=(-4, 3), ylims=(2.5, 5)) # zoom 
 

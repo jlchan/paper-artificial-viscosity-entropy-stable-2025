@@ -66,12 +66,11 @@ regularized_ratio(a, b; tol=1e-14) = a * b / (b^2 + tol)
 using Trixi.ForwardDiff
 dudv(v, equations) = ForwardDiff.jacobian(v -> entropy2cons(v, equations), v)
 
-# C12 = LDG switch parameter
-function calc_dg_derivative!(dudx, u, params; C12=0)
+function calc_dg_derivative!(dudx, u, params)
     (; rd, md) = params
     uM = rd.Vf * u
     uP = uM[md.mapP]
-    interface_flux = @. 0.5 * (uP - uM) * md.nx - C12 * 0.5 * abs(md.nx) *(uP - uM) 
+    interface_flux = @. 0.5 * (uP - uM) * md.nx
     dudx .= md.rxJ .* (rd.Dr * u) + rd.LIFT * interface_flux
     dudx ./= md.J
 end
@@ -85,8 +84,8 @@ function rhs!(du, u, params, t)
     v = rd.Pq * cons2entropy.(rd.Vq * u, equations)
 
     # calculate derivatives for viscous terms
-    (; C12, sigma) = params # C12 = LDG parameter
-    calc_dg_derivative!(sigma, v, params; C12)
+    (; sigma) = params 
+    calc_dg_derivative!(sigma, v, params)
 
     u_q = rd.Vq * u
     # u_q = entropy2cons.(rd.Vq * v, equations)
@@ -198,40 +197,37 @@ function rhs!(du, u, params, t)
     Q_skew = 0.5 * (rd.M * rd.Dr - rd.Dr' * rd.M)
     sigmaM = sigma[rd.Fmask, :]
     sigmaP = sigmaM[md.mapP]
-    du .-= md.rxJ .* (Q_skew * sigma) + E' * (@. 0.5 * sigmaP * md.nx + C12 * 0.5 * (sigmaP - sigmaM))
+    du .-= md.rxJ .* (Q_skew * sigma) + E' * (@. 0.5 * sigmaP * md.nx)
 
     du .= inv(rd.M) * (-du ./ md.J)
     
 end
 
 u = rd.Pq * init_condition.(rd.Vq * md.x, equations)
-# u = initial_condition.(md.x, equations)
 
 interface_flux = flux_lax_friedrichs
 # interface_flux = flux_ranocha
 # interface_flux = flux_central
 
-C12 = 0
-
 params_elementwise = (; rd, md, equations, interface_flux, init_condition,
             sigma=similar(u), viscosity=ones(size(md.xq)),
             enforce_additional_entropy_inequality, 
-            use_EC_volume_flux, use_entropy_projection = true, C12,
+            use_EC_volume_flux, use_entropy_projection = true,
             AV_type = :elementwise)      
 
 ode = ODEProblem(rhs!, u, tspan, params_elementwise)
 sol_elementwise = solve(ode, SSPRK43(), 
                         dt = 1e-8,
                         abstol=1e-8, reltol=1e-6,
-                        # abstol=1e-9, reltol=1e-7,
                         saveat=LinRange(tspan..., 100), 
                         callback=AliveCallback(alive_interval=100))
 
 params_subcell = (; rd, md, equations, interface_flux, init_condition,
             sigma=similar(u), viscosity=ones(size(md.xq)),
             enforce_additional_entropy_inequality, 
-            use_EC_volume_flux, use_entropy_projection = true, C12,
+            use_EC_volume_flux, use_entropy_projection = true, 
             AV_type = :subcell)    
+
 ode = ODEProblem(rhs!, u, tspan, params_subcell)
 sol_subcell = solve(ode, SSPRK43(), 
                     dt = 1e-8,

@@ -50,15 +50,11 @@ end
 
 regularized_ratio(a, b) = a * b / (b^2 + 1e-14)
 
-using TimerOutputs
-const to = TimerOutput()
-
 function rhs!(du, u, params, t)
 
     (; rd, md, equations, interface_flux) = params
     (; invMQTr, invMQTs) = params
-
-    @timeit to "Entropy projection" begin
+    
     # interpolate to quad points, project entropy variables
     uq = rd.Vq * u
     vq = similar(uq)
@@ -66,9 +62,7 @@ function rhs!(du, u, params, t)
         vq[i] = cons2entropy(uq[i], equations)
     end
     v = rd.Pq * vq
-    end
 
-    @timeit to "Interpolate to interfaces" begin
     # interpolate
     vf = rd.Vf * v   
     uM = vf
@@ -79,9 +73,7 @@ function rhs!(du, u, params, t)
     if all(md.is_periodic) == false
         @. uP[md.mapB] = initial_condition(md.xf[md.mapB], md.yf[md.mapB], t, equations)
     end
-    end
 
-    @timeit to "Volume integrals" begin
     # compute volume contributions
     fill!(du, zero(eltype(du)))
     (; rxyJ, sxyJ, flux_uq) = params
@@ -93,15 +85,11 @@ function rhs!(du, u, params, t)
         flux_uq[i] = flux(uq[i], sxyJ[i], equations)
     end
     mymul!(du, invMQTs, flux_uq, 1, 1)
-    end
 
-    @timeit to "Compute entropy error" begin
     # compute minimal artificial viscosity coefficients
     psi_boundary = sum(Diagonal(rd.wf) * (@. psi(uM, SVector.(md.nxJ, md.nyJ), equations)), dims=1)
     entropy_errors = sum(dot.(v, rd.M * du), dims=1) + psi_boundary
-    end
 
-    @timeit to "Calc local entropy correction" begin
     (; correction_version) = params    
     if correction_version == :Abgrall
         u_avg = params.eTrM * u
@@ -148,9 +136,7 @@ function rhs!(du, u, params, t)
                    regularized_ratio(a, b) * md.J[1, e] * rd.wq .* GtGvs, 1, 1)                   
         end
     end
-    end # timeit
 
-    @timeit to "Surface convective terms" begin
     # now add transport surface terms
     (; convective_interface_flux) = params
     @batch for i in eachindex(convective_interface_flux)
@@ -158,26 +144,11 @@ function rhs!(du, u, params, t)
             interface_flux(uM[i], uP[i], SVector(md.nx[i], md.ny[i]), equations) * md.Jf[i]
     end
     mymul!(du, rd.LIFT, convective_interface_flux, 1, 1)  
-    end
 
     @batch for i in eachindex(du)
         du[i] /= -md.J[i]
     end
     
-end
-
-# # rho = ..., rho * u = ..., rho * e = ...
-function initial_condition_density_wave(x, y, t, equations::CompressibleEulerEquations2D)
-    # primitive variables
-    # rho = 1.0 + 0.5 * exp(-25 * x^2)
-    # u = 0.0
-    # p = rho^equations.gamma
-    u = .10 
-    v = .20
-    rho = 1.0 + .5 * sin(pi * (x - u * t)) * sin(pi * (y - v * t))
-    p = 10.0
-
-    return prim2cons(SVector(rho, u, v, p), equations)
 end
 
 # Riemann problem
@@ -205,55 +176,7 @@ function initial_condition_Riemann_problem(x, y, t, equations::CompressibleEuler
     return prim2cons(SVector(rho, u, v, p), equations)
 end
 
-# on a (0, 10)^2 domain
-function initial_condition_vortex(x, y, t, equations::CompressibleEulerEquations2D)
-    γ = equations.gamma
-
-    x0 = 4.5
-    y0 = 5.0
-    beta = 1
-    r2 = (x - x0 - t)^2 + (y - y0)^2
-
-    u = 1 - beta * exp(1 - r2) * (y - y0) / (2 * pi)
-    v = beta * exp(1 - r2) * (x - x0 - t) / (2 * pi)
-    rho = 1 - (1 / (8 * γ * pi^2)) * (γ - 1) / 2 * (beta * exp(1 - r2))^2
-    rho = rho^(1 / (γ - 1))
-    p = rho^γ
-
-    return prim2cons(SVector(rho, u, v, p), equations)
-end
-
-# atwood number KHI
-function initial_condition_KHI(x, y, t, equations::CompressibleEulerEquations2D)
-
-    x = (x, y)
-    # A = .8
-    A = 3 / 7
-    rho1 = 0.5 * one(A) # recover original with A = 3/7
-    rho2 = rho1 * (1 + A) / (1 - A)
-
-    # B is a discontinuous function with value 1 for -.5 <= x <= .5 and 0 elsewhere
-    slope = 15
-    B = 0.5 * (tanh(slope * x[2] + 7.5) - tanh(slope * x[2] - 7.5))
-
-    rho = rho1 + B * (rho2 - rho1)  # rho ∈ [rho_1, rho_2]
-    v1 = B - 0.5                    # v1  ∈ [-.5, .5]
-    # v2 = 0.1 * sin(2 * pi * x[1]) 
-    v2 = 0.1 * sin(2 * pi * x[1]) * (1 + .01 * sin(pi * x[1]) * sin(pi * x[2])) # symmetry breaking
-    p = 1.0
-    return prim2cons(SVector(rho, v1, v2, p), equations)
-end
-
-function initial_condition_blast_test(x, y, t, equations::CompressibleEulerEquations2D)
-    rho = 1.0 + (abs(x) < 0.5) * (abs(y) < 0.5)
-    v1 = 0.0
-    v2 = 0.0
-    p = rho^equations.gamma
-    return prim2cons(SVector(rho, v1, v2, p), equations)
-end
-
 init_cond = initial_condition_Riemann_problem
-# init_cond = initial_condition_density_wave
 
 u = StructArray{SVector{nvariables(equations), Float64}}(ntuple(_ -> similar(md.x), 4))
 u .= rd.Pq * init_cond.(md.xq, md.yq, 0.0, equations)
@@ -286,15 +209,12 @@ params = (; rd, md, equations, interface_flux,
             # correction_version = :Offner,
          )
 
-# tspan = (0.0, 25.0)
-# tspan = (0.0, 1.7)
 tspan = (0.0, .25)
 
 ode = ODEProblem(rhs!, u, tspan, params)
 sol = solve(ode, SSPRK43(), 
             dt = 1e-8,
-            # abstol=1e-6, reltol=1e-4,
-            abstol=1e-7, reltol=1e-5,
+            abstol=1e-6, reltol=1e-4,
             saveat=LinRange(tspan..., 50), 
             callback=AliveCallback(alive_interval=100))
 
@@ -308,24 +228,4 @@ pdata = [interp * getindex.(u, 1), interp * pressure.(u, equations)]
 # pdata = [interp * getindex.(u, 1), interp * pressure.(u, equations), interp * repeat(params.viscosity', rd.Np, 1)]
 num_elems = Int(sqrt(md.num_elements ÷ 2))
 # vtu_name = MeshData_to_vtk(md, rd, pdata, ["rho", "p"], "Riemann_N$(N)_K$(num_elems)_Offner", true)
-
-# N = 3, K = 16, 0.0003539014812055268
-# N = 3, K = 32, 1.7213511807729033e-5
-# ptwise_error = rd.Vq * u - init_cond.(md.xq, md.yq, sol.t[end], equations)
-# L2_error = sqrt(sum(md.wJq .* norm.(ptwise_error).^2))
-# @show L2_error
-
-# function compute_entropy_residual(sol)
-#     entropy_residual = zeros(length(sol.u))
-#     for (i, u) in enumerate(sol.u)
-#         du = fill!(similar(u), zero(eltype(u)))
-#         rhs!(du, u, params, 0.0)
-#         v = cons2entropy.(u, equations)
-#         entropy_residual[i] = sum(md.J .* (rd.M * dot.(v, du)))
-#     end
-#     return entropy_residual
-# end
-
-# compute_entropy(sol) = [sum(md.wJq .* entropy.(u, equations)) for u in sol.u]
-# plot(sol.t, compute_entropy_residual(sol))
 

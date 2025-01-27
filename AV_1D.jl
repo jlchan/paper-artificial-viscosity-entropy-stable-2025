@@ -39,39 +39,124 @@ end
 
 
 
-N = 3
+N = 7
 rd = RefElemData(Line(), N)
-(VX,), EToV = uniform_mesh(rd.element_type, 100)
+(VX,), EToV = uniform_mesh(rd.element_type, 50)
 
 enforce_additional_entropy_inequality = false
 use_EC_volume_flux = false
+AV_type = :elementwise
 
-# @. VX = 0.5 * (1 + VX) # modified Sod
-# init_condition = initial_condition_modified_sod
-# tspan = (0.0, 0.2) # modified Sod
+@. VX = 0.5 * (1 + VX) # modified Sod
+init_condition = initial_condition_modified_sod
+tspan = (0.0, 0.2) # modified Sod
 
-@. VX = 5 * VX # for Shu Osher
-init_condition = initial_condition_shu_osher
-tspan = (0.0, 1.8) # Shu-Osher
+# @. VX = 5 * VX # for Shu Osher
+# init_condition = initial_condition_shu_osher
+# tspan = (0.0, 1.8) # Shu-Osher
 
 md = MeshData(((VX,), EToV), rd)
+
+# # for density and blast wave
+# init_condition = initial_condition_density_wave
+# tspan = (0.0, 10.0) # density wave
+# md = MeshData(((VX,), EToV), rd; is_periodic=true) 
 
 equations = CompressibleEulerEquations1D(1.4)
 
 psi(u, ::CompressibleEulerEquations1D) = u[2]
 psi(u, normal, ::CompressibleEulerEquations1D) = u[2] * normal
 
+# adapted from Atum.jl
+function EC_matrix_dissipation(u_ll, u_rr, n⃗::SVector, 
+                               equations::CompressibleEulerEquations1D)
+    
+    γ = equations.gamma
+    ecflux = flux_ranocha(u_ll, u_rr, n⃗, equations)
+
+    # in 1D, n is just a scalar
+    n⃗ = n⃗[1]
+
+    ρ⁻, ρu⃗⁻, ρe⁻ = u_ll
+    u⃗⁻ = ρu⃗⁻ / ρ⁻
+    e⁻ = ρe⁻ / ρ⁻
+    p⁻ = Trixi.pressure(u_ll, equations)
+    b⁻ = ρ⁻ / 2p⁻
+
+    ρ⁺, ρu⃗⁺, ρe⁺ = u_rr
+    u⃗⁺ = ρu⃗⁺ / ρ⁺
+    e⁺ = ρe⁺ / ρ⁺
+    p⁺ = Trixi.pressure(u_rr, equations)
+    b⁺ = ρ⁺ / 2p⁺
+
+    logavg = Trixi.ln_mean
+    avg(a, b) = 0.5 * (a + b)
+    ρ_log = logavg(ρ⁻, ρ⁺)
+    b_log = logavg(b⁻, b⁺)
+    u⃗_avg = avg(u⃗⁻, u⃗⁺)
+    p_avg = avg(ρ⁻, ρ⁺) / 2avg(b⁻, b⁺)
+    u²_bar = 2 * norm(u⃗_avg) - avg(norm(u⃗⁻), norm(u⃗⁺))
+    h_bar = γ / (2 * b_log * (γ - 1)) + u²_bar / 2
+    c_bar = sqrt(γ * p_avg / ρ_log)
+
+    u⃗mc = u⃗_avg - c_bar * n⃗
+    u⃗pc = u⃗_avg + c_bar * n⃗
+    u_avgᵀn = u⃗_avg * n⃗
+
+    v⁻ = cons2entropy(u_ll, equations)
+    v⁺ = cons2entropy(u_rr, equations)
+    #v⁻ = Atum.entropyvariables(law, q⁻, aux⁻)
+    #v⁺ = Atum.entropyvariables(law, q⁺, aux⁺)
+    Δv = v⁺ - v⁻
+
+    λ1 = abs(u_avgᵀn - c_bar) * ρ_log / 2γ
+    λ2 = abs(u_avgᵀn) * ρ_log * (γ - 1) / γ
+    λ3 = abs(u_avgᵀn + c_bar) * ρ_log / 2γ
+    λ4 = abs(u_avgᵀn) * p_avg
+
+    Δv_ρ, Δv_ρu⃗, Δv_ρe = Δv
+    u⃗ₜ = u⃗_avg - u_avgᵀn * n⃗
+
+    w1 = λ1 * (Δv_ρ + u⃗mc' * Δv_ρu⃗ + (h_bar - c_bar * u_avgᵀn) * Δv_ρe)
+    w2 = λ2 * (Δv_ρ + u⃗_avg' * Δv_ρu⃗ + u²_bar / 2 * Δv_ρe)
+    w3 = λ3 * (Δv_ρ + u⃗pc' * Δv_ρu⃗ + (h_bar + c_bar * u_avgᵀn) * Δv_ρe)
+
+    Dρ = w1 + w2 + w3
+
+    Dρu⃗ = (w1 * u⃗mc +
+           w2 * u⃗_avg +
+           w3 * u⃗pc +
+           λ4 * (Δv_ρu⃗ - n⃗' * (Δv_ρu⃗) * n⃗ + Δv_ρe * u⃗ₜ))
+
+    Dρe = (w1 * (h_bar - c_bar * u_avgᵀn) +
+           w2 * u²_bar / 2 +
+           w3 * (h_bar + c_bar * u_avgᵀn) +
+           λ4 * (u⃗ₜ' * Δv_ρu⃗ + Δv_ρe * (u⃗_avg' * u⃗_avg - u_avgᵀn ^ 2)))
+
+    return ecflux - SVector(Dρ, Dρu⃗..., Dρe) / 2
+end
+
+# use the 2D HLLC implementation since the 1D Trixi version doesn't
+# account for n::Integer < 0.
+import Trixi: flux_hllc
+function flux_hllc(u_ll, u_rr, n::SVector{1}, equations::CompressibleEulerEquations1D)
+    f = flux_hllc(SVector(u_ll[1], u_ll[2], 0, u_ll[3]), 
+                  SVector(u_rr[1], u_rr[2], 0, u_rr[3]), 
+                  SVector(n[1], 0.0), 
+                  CompressibleEulerEquations2D(equations.gamma))    
+    return SVector(f[1], f[2], f[4])
+end
+
 regularized_ratio(a, b; tol=1e-14) = a * b / (b^2 + tol)
 
 using Trixi.ForwardDiff
 dudv(v, equations) = ForwardDiff.jacobian(v -> entropy2cons(v, equations), v)
 
-# C12 = LDG switch parameter
-function calc_dg_derivative!(dudx, u, params; C12=0)
+function calc_dg_derivative!(dudx, u, params)
     (; rd, md) = params
     uM = rd.Vf * u
     uP = uM[md.mapP]
-    interface_flux = @. 0.5 * (uP - uM) * md.nx - C12 * 0.5 * abs(md.nx) *(uP - uM) 
+    interface_flux = @. 0.5 * (uP - uM) * md.nx 
     dudx .= md.rxJ .* (rd.Dr * u) + rd.LIFT * interface_flux
     dudx ./= md.J
 end
@@ -85,8 +170,8 @@ function rhs!(du, u, params, t)
     v = rd.Pq * cons2entropy.(rd.Vq * u, equations)
 
     # calculate derivatives for viscous terms
-    (; C12, sigma) = params # C12 = LDG parameter
-    calc_dg_derivative!(sigma, v, params; C12)
+    (; sigma) = params 
+    calc_dg_derivative!(sigma, v, params)
 
     u_q = rd.Vq * u
     # u_q = entropy2cons.(rd.Vq * v, equations)
@@ -198,73 +283,59 @@ function rhs!(du, u, params, t)
     Q_skew = 0.5 * (rd.M * rd.Dr - rd.Dr' * rd.M)
     sigmaM = sigma[rd.Fmask, :]
     sigmaP = sigmaM[md.mapP]
-    du .-= md.rxJ .* (Q_skew * sigma) + E' * (@. 0.5 * sigmaP * md.nx + C12 * 0.5 * (sigmaP - sigmaM))
+    du .-= md.rxJ .* (Q_skew * sigma) + E' * (@. 0.5 * sigmaP * md.nx)
 
     du .= inv(rd.M) * (-du ./ md.J)
     
 end
 
 u = rd.Pq * init_condition.(rd.Vq * md.x, equations)
-# u = initial_condition.(md.x, equations)
 
 interface_flux = flux_lax_friedrichs
-# interface_flux = flux_ranocha
-# interface_flux = flux_central
+# interface_flux = flux_hllc
+# interface_flux = EC_matrix_dissipation
 
-C12 = 0
-
-params_elementwise = (; rd, md, equations, interface_flux, init_condition,
+params = (; rd, md, equations, interface_flux, init_condition,
             sigma=similar(u), viscosity=ones(size(md.xq)),
             enforce_additional_entropy_inequality, 
-            use_EC_volume_flux, use_entropy_projection = true, C12,
-            AV_type = :elementwise)      
+            use_EC_volume_flux, AV_type, 
+            use_entropy_projection = true)
 
-ode = ODEProblem(rhs!, u, tspan, params_elementwise)
-sol_elementwise = solve(ode, SSPRK43(), 
-                        dt = 1e-8,
-                        abstol=1e-8, reltol=1e-6,
-                        # abstol=1e-9, reltol=1e-7,
-                        saveat=LinRange(tspan..., 100), 
-                        callback=AliveCallback(alive_interval=100))
 
-params_subcell = (; rd, md, equations, interface_flux, init_condition,
-            sigma=similar(u), viscosity=ones(size(md.xq)),
-            enforce_additional_entropy_inequality, 
-            use_EC_volume_flux, use_entropy_projection = true, C12,
-            AV_type = :subcell)    
-ode = ODEProblem(rhs!, u, tspan, params_subcell)
-sol_subcell = solve(ode, SSPRK43(), 
-                    dt = 1e-8,
-                    abstol=1e-8, reltol=1e-6,
-                    # abstol=1e-9, reltol=1e-7,
-                    saveat=LinRange(tspan..., 100), 
-                    callback=AliveCallback(alive_interval=100))            
+ode = ODEProblem(rhs!, u, tspan, params)
+sol = solve(ode, SSPRK43(), 
+            dt = 1e-8,
+            abstol=1e-8, reltol=1e-6,
+            saveat=LinRange(tspan..., 100), 
+            callback=AliveCallback(alive_interval=100))
 
+u = sol.u[end]
 pad_nans(u) = vec([u; fill(NaN, 1, size(u, 2))])
 
-# using LaTeXStrings
-# plot(pad_nans(rd.Vp * md.x), pad_nans(rd.Vp * getindex.(u, 1)), linewidth=2,
+using LaTeXStrings
+plot(pad_nans(rd.Vp * md.x), pad_nans(rd.Vp * getindex.(u, 1)), linewidth=2,
+      label=L"N=%$N, K=%$(md.num_elements)")
+plot!(legend=:topright, dpi=500, xformatter=:none, yformatter=:none, legendfontsize=14)
+
+# using MAT
+# vars = matread("weno5_shuosher.mat")   
+# plot(vec(vars["x"]), vec(vars["rho"]), label="WENO", ylims=(0.5, 5.5), linewidth=2)
+# plot!(pad_nans(rd.Vp * md.x), pad_nans(rd.Vp * getindex.(u, 1)), linewidth=2,
 #       label=L"N=%$N, K=%$(md.num_elements)")
-# plot!(legend=:topright, dpi=500, xformatter=:none, yformatter=:none, legendfontsize=14)
-
-using MAT
-vars = matread("weno5_shuosher.mat")   
-plot(vec(vars["x"]), vec(vars["rho"]), label="WENO", ylims=(0.5, 5.5), linewidth=1.5)
-
-Vp = vandermonde(Line(), rd.N, LinRange(-1, 1, 100)) / rd.VDM
-
-u = sol_elementwise.u[end]
-plot!(pad_nans(Vp * md.x), pad_nans(Vp * getindex.(u, 1)), linewidth=2, 
-      label=L"$N=%$N, K=%$(md.num_elements)$, elementwise AV")
-
-u = sol_subcell.u[end]
-plot!(pad_nans(Vp * md.x), pad_nans(Vp * getindex.(u, 1)), linewidth=2,
-      label=L"$N=%$N, K=%$(md.num_elements)$, subcell AV")
+# plot!(legend=:bottomleft, xformatter=:none, yformatter=:none, dpi=500)
+# plot!(dpi=500, xformatter=:none, yformatter=:none, legendfontsize=14)
+# plot!(xlims=(-4, 3), ylims=(2.5, 5)) # zoom 
 
 
-plot!(legend=:bottomleft, xformatter=:none, yformatter=:none, dpi=500)
-plot!(dpi=500, xformatter=:none, yformatter=:none, legendfontsize=14)
-#
-plot!(xlims=(0.5, 2.5), ylims=(2.25, 4.8)) # zoom 
-# png("shu_osher_elementwise_vs_subcell.png")
-
+# # using LaTeXStrings
+# # if params.enforce_additional_entropy_inequality==true
+# #     plot!(pad_nans(rd.Vp * md.x), pad_nans(rd.Vp * getindex.(u, 1)),       
+# #         label="Two entropy inequalities", linewidth=2)
+# # else
+# #     plot!(pad_nans(rd.Vp * md.x), pad_nans(rd.Vp * getindex.(u, 1)),       
+# #         label="One entropy inequality", linewidth=2)
+# # end
+# plot!(pad_nans(rd.Vp * md.x), pad_nans(rd.Vp * getindex.(u, 1)),       
+#       label=L"N=%$N, K=%$(md.num_elements)")
+# plot!(legend=:topleft, xformatter=:none, yformatter=:none, dpi=500)
+# plot!(dpi=500, xformatter=:none, yformatter=:none)      
