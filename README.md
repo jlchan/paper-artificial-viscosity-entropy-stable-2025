@@ -1,6 +1,6 @@
 # paper-artificial-viscosity-entropy-stable-2025
 
-This repository contains information and code to reproduce the results presented in the preprint "An artificial viscosity approach to high order entropy stable discontinuous Galerkin methods". 
+This repository contains information and code to reproduce the results presented in the preprint ["An artificial viscosity approach to high order entropy stable discontinuous Galerkin methods"](https://arxiv.org/abs/2501.16529). 
 
 You will need to first activate and instantiate the Julia package environment to run any code. These codes were tested on Julia 1.10.7. 
 
