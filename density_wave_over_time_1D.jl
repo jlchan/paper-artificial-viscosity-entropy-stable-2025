@@ -191,11 +191,15 @@ plot!(sol_EC.t[2:end], compute_L2_error(sol_EC)[2:end], linewidth=2, linestyle=:
 plot!(sol_ESAV.t[2:end], compute_L2_error(sol_ESAV)[2:end], linewidth=2, linestyle=:dot, label="AV")
 # plot!(sol_ESAV_subcell.t[2:end], compute_L2_error(sol_ESAV_subcell)[2:end], linewidth=2, linestyle=:dashdot, label="Subcell AV")
 xlabel!("Time", xguidefontsize=14)
-# ylabel!("Change in entropy", yguidefontsize=14)
-plot!(yaxis=:log, legend=:bottomright, dpi=600, 
-      xtickfontsize=14,ytickfontsize=14, legendfontsize=14)
-# png("Density_wave_over_time_A0p5.png")
-png("Density_wave_over_time_A0p98.png")
+plot!(yaxis=:log, legend=:bottomleft, dpi=600, 
+      xtickfontsize=14, ytickfontsize=14, legendfontsize=9)
+if amplitude ≈ 0.5
+    png("Density_wave_over_time_A0p5.png")
+else
+    png("Density_wave_over_time_A0p98.png")
+end
+
+
 
 
 
@@ -212,8 +216,12 @@ plot!(sol_ESAV.t, compute_entropy(sol_ESAV), linewidth=2, linestyle=:dot, label=
 xlabel!("Time", xguidefontsize=14)
 # ylabel!("Change in entropy", yguidefontsize=14)
 # plot!(ylims=(-6e-5, 2e-5)) # for A = 0.5
-plot!(xtickfontsize=12, ytickfontsize=12, legendfontsize=14, legend=:bottomleft, dpi=600)
+plot!(xtickfontsize=12, ytickfontsize=12, legendfontsize=9, 
+     legend=:bottomleft, dpi=600)
 # plot!(ylims=(-7e-5, 2.5e-5))
-# png("Density_wave_entropy_over_time_A0p5.png")
-png("Density_wave_entropy_over_time_A0p98.png")
+if amplitude ≈ 0.5
+    png("Density_wave_entropy_over_time_A0p5.png")
+else
+    png("Density_wave_entropy_over_time_A0p98.png")
+end
 
