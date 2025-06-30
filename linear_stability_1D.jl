@@ -4,9 +4,11 @@ using Trixi
 using StaticArrays
 using OrdinaryDiffEq
 
-N = 7
+# loop over discretization parameters
+for (N, K) in [(3, 8), (3, 16), (3, 32), (7, 4), (7, 8), (7, 16)]
+
 rd = RefElemData(Line(), SBP(), N)
-(VX,), EToV = uniform_mesh(rd.element_type, 4)
+(VX,), EToV = uniform_mesh(rd.element_type, K)
 md = MeshData(((VX,), EToV), rd; is_periodic=true) 
 
 equations = CompressibleEulerEquations1D(1.4)
@@ -47,6 +49,11 @@ function rhs!(du, u, params, t)
 
     u_q = rd.Vq * u
     u_avg = repeat(0.5 * sum(rd.M, dims=1) * u, length(rd.rq), 1)
+
+    # solution "u" to evaluate the AV at
+    # u_av = u_avg
+    u_av = u_q
+    # u_av = entropy2cons.(rd.Vq * v, equations)
 
     uM = entropy2cons.(rd.Vf * v, equations)
     uP = uM[md.mapP]
@@ -93,8 +100,7 @@ function rhs!(du, u, params, t)
         unscaled_viscous_dissipation = zero(eltype(u[1]))
         integrand_L2_norm = zero(eltype(u[1]))
         for i in axes(sigma_q, 1)
-            # v_i = cons2entropy(u_q[i, e], equations)
-            v_i = cons2entropy(u_avg[i, e], equations)
+            v_i = cons2entropy(u_av[i, e], equations)
             K = dudv(v_i, equations)
             unscaled_viscous_dissipation += 
                 md.wJq[i, e] * (sigma_q[i]' * K * sigma_q[i])
@@ -103,25 +109,26 @@ function rhs!(du, u, params, t)
         end
         
         # piecewise constant viscosity
+        # smoothmin(a, b; alpha=100) = (a * exp(-alpha * a) + b * exp(-alpha * b)) / (exp(-alpha * a) + exp(-alpha * b))
+        # a = -smoothmin(0, entropy_error)
         a = -min(0, entropy_error)
         b = unscaled_viscous_dissipation
         view(viscosity, :, e) .= regularized_ratio(a, b)
 
-        # # subcell viscosity
+        # # # subcell viscosity
         # view(viscosity, :, e) .= 
         #     regularized_ratio.(-min(0, entropy_error) * integrand, integrand_L2_norm)
 
     end
 
     # add viscous terms, scale derivs pointwise by the viscosity
-    # sigma .= rd.Pq * (viscosity .* (dudv.(cons2entropy.(u_q, equations), equations)) .* (rd.Vq * sigma))
-    sigma .= rd.Pq * (viscosity .* (dudv.(cons2entropy.(u_avg, equations), equations)) .* (rd.Vq * sigma))
+    sigma .= rd.Pq * (viscosity .* (dudv.(cons2entropy.(u_av, equations), equations)) .* (rd.Vq * sigma))
 
     # compute divergence
     sigmaM = sigma[rd.Fmask, :]
     sigmaP = sigmaM[md.mapP]
     if params.use_AV == true
-        du .-= md.rxJ .* (Q_skew * sigma) + E' * (@. 0.5 * sigmaP * md.nx)
+        du .-= md.rxJ .* (Q_skew * sigma) + E' * (@. 0.5 * sigmaP * md.nx) #+ 0.5 * (sigmaP - sigmaM))
     end
 
     du .= inv(rd.M) * (-du ./ md.J)
@@ -129,18 +136,19 @@ function rhs!(du, u, params, t)
 end
 
 # rho = ..., rho * u = ..., rho * e = ...
-function initial_condition(x, equations::CompressibleEulerEquations1D)
+function initial_condition(x, equations::CompressibleEulerEquations1D; amplitude=.98)
 
-    rho = 1.0 + .98 * sin(2 * pi * x)
+    rho = 1.0 + amplitude * sin(2 * pi * x)
     u = .10
-    p = 20.0
+    p = 10.0
 
     return prim2cons(SVector(rho, u, p), equations)
 end
 
 # initialize using L2 projection
-rd2 = RefElemData(Line(), rd.N)
-u = rd2.Pq * initial_condition.(rd2.Vq * md.x, equations)
+rd2 = RefElemData(Line(), rd.N) #; quad_rule_vol=gauss_lobatto_quad(0,0,rd.N+4))
+u = rd2.Pq * initial_condition.(rd2.Vq * md.x, equations; amplitude=0.5)
+# u = initial_condition.(md.x, equations)
 
 interface_flux = flux_lax_friedrichs
 # interface_flux = flux_central
@@ -148,16 +156,25 @@ interface_flux = flux_lax_friedrichs
 volume_flux = flux_central
 # volume_flux = flux_ranocha
 
+use_AV = true
 use_AV = false
 
 params = (; rd, md, equations, interface_flux, volume_flux, use_AV)
+
+tspan = (0, 2.0)
+ode = ODEProblem(rhs!, u, tspan, params)
+sol = solve(ode, SSPRK43(), 
+            dt = 1e-8, abstol=1e-8, reltol=1e-6,
+            #callback=AliveCallback(alive_interval=1000))
+            )
+u = sol.u[end]
 
 using ForwardDiff
 rhs_fd = let params=params
     function rhs_fd(u_in::AbstractArray{T}) where {T}
         u = reinterpret(reshape, SVector{nvariables(equations), T}, 
                         reshape(u_in, :, size(md.x)...))
-        du = similar(u)
+        du = fill!(similar(u), zero(eltype(u)))
         rhs!(du, u, params, 0.0)
         return reinterpret(reshape, T, du)
     end
@@ -182,8 +199,11 @@ A = ForwardDiff.jacobian(rhs_fd, u_in)
 # end
 
 @show extrema(real.(eigvals(A)))
-scatter(eigvals(A), leg=false, ms=6)#, label="AV", marker=:star5)
-plot!(xlims=(-.25, .25), ylims=(-5, 5))
-plot!(dpi=500, tickfontsize=14)
-# plot!(xformatter=:none, yformatter=:none, dpi=500)
-xlabel!(""); ylabel!("")
+
+# scatter(eigvals(A), leg=false, ms=6)#, label="AV", marker=:star5)
+# plot!(xlims=(-5, 5), ylims=(-5, 5))
+# plot!(xlims=(-.25, .25), ylims=(-5, 5))
+# plot!(dpi=500, tickfontsize=14)
+# xlabel!(""); ylabel!("")
+
+end # loop over (N, K)
