@@ -5,12 +5,18 @@ using StaticArrays
 using Polyester, Octavian
 using StructArrays
 
-N = 3
+N = 2
 
 function initial_condition_test(x, y, t, equations::CompressibleEulerEquations2D)
     # smooth
     rho = 1 + .5 * sin(.1 + pi * x) * sin(.2 + pi * y)
     v1 = .5 * sin(.2 + pi * x) * sin(.1 + pi * y)
+    v2 = 0
+    p = rho^equations.gamma
+
+    # smooth
+    rho = 1 + .5 * sin(.1 + pi * x) * sin(.2 + 1.5 * pi * y)
+    v1 = .5 * sin(.2 + 1.5 * pi * x) * sin(.1 + pi * y)
     v2 = 0
     p = rho^equations.gamma
 
@@ -23,14 +29,13 @@ function initial_condition_test(x, y, t, equations::CompressibleEulerEquations2D
     return prim2cons(SVector(rho, v1, v2, p), equations)
 end
 
-max_subcell_visc = Float64[]
 max_elementwise_visc = Float64[]
 max_entropy_errors = Float64[]
 max_visc_dissipation = Float64[]
 min_visc_dissipation = Float64[]
-for K in [2, 4, 8, 16, 32]
+for K in [4, 8, 16, 32, 64]
     rd = RefElemData(Tri(), N; 
-                     quad_rule_vol=StartUpDG.NodesAndModes.quad_nodes_tri(2 * N + 1), 
+                     quad_rule_vol=quad_nodes(Tri(), N + 1), 
                      quad_rule_face = gauss_quad(0, 0, N + 1))
     VXY, EToV = uniform_mesh(rd.element_type, K)
     md = MeshData((VXY, EToV), rd; 
@@ -71,7 +76,7 @@ for K in [2, 4, 8, 16, 32]
         return du
     end
 
-    regularized_ratio(a, b) = a * b / (b^2 + 1e-14)
+    regularized_ratio(a, b) = a * b / (b^2 + 1e-16)
 
     function calc_dg_gradients!(gradients, u, params)
         (; rd, md) = params
@@ -166,27 +171,10 @@ for K in [2, 4, 8, 16, 32]
         end
 
         # element-local K_visc                   
-        elementwise_viscosity = vec(map((a,b) -> max(0.0, -min(0, a) * b / (1e-12 + b * b)), 
+        elementwise_viscosity = vec(map((a,b) -> max(0.0, -min(0, a) * b / (1e-16 + b * b)), 
                                     entropy_errors, unscaled_viscous_dissipation))
 
-        # subcell varying viscosity
-        (; integrand) = params
-        subcell_viscosity = zeros(size(md.xq))
-        for e in axes(K_visc, 2)
-            integrand_L2_norm = 0.0
-            for i in eachindex(integrand)
-                integrand[i] = (dot(sigma_x[i, e], K_visc[i, e], sigma_x[i, e]) + 
-                                dot(sigma_y[i, e], K_visc[i, e], sigma_y[i, e]))
-                integrand_L2_norm += md.wJq[i, e] * integrand[i]^2
-            end
-            # rescale K_visc
-            for i in axes(K_visc, 1)
-                subcell_viscosity[i, e] = 
-                    regularized_ratio(-min(0, entropy_errors[e]) * integrand[i], 
-                                    integrand_L2_norm)
-            end
-        end
-        return entropy_errors, unscaled_viscous_dissipation, elementwise_viscosity, subcell_viscosity
+        return entropy_errors, unscaled_viscous_dissipation, elementwise_viscosity
     end
 
     u = StructArray{SVector{nvariables(equations), Float64}}(ntuple(_ -> similar(md.x), 4))
@@ -226,15 +214,14 @@ for K in [2, 4, 8, 16, 32]
             )
 
 
-    entropy_errors, unscaled_viscous_dissipation, elementwise_viscosity, subcell_viscosity = 
+    entropy_errors, unscaled_viscous_dissipation, elementwise_viscosity = 
         compute_visc(u, params)
-    @show maximum(-min.(0, entropy_errors)), maximum(subcell_viscosity)
+    @show maximum(-min.(0, entropy_errors)), maximum(elementwise_viscosity)
     # @show unscaled_viscous_dissipation
     
     push!(max_elementwise_visc, maximum(elementwise_viscosity))
     push!(max_visc_dissipation, maximum(unscaled_viscous_dissipation))
     push!(min_visc_dissipation, minimum(unscaled_viscous_dissipation))
-    push!(max_subcell_visc, maximum(subcell_viscosity))
     push!(max_entropy_errors, maximum(abs.(entropy_errors)))
     # push!(max_entropy_errors, maximum(abs.(-min.(0, entropy_errors))))
 end
@@ -246,9 +233,9 @@ plot(h, max_elementwise_visc, marker=:dot, linewidth=2, label=L"\epsilon_k(u_h)"
 plot!(h, max_entropy_errors, marker=:square, linewidth=2,  label=L"\sigma_k(u_h)")
 
 # smooth rates
-r1 = (N + 1 + d + 0.5)
+r1 = (2 * N + 1)
 C = 3 * max_elementwise_visc[end] / h[end]^r1
-plot!(h, C * h .^ r1, linestyle=:dash, linewidth=2, label=L"O(h^{N+3.5})")
+plot!(h, C * h .^ r1, linestyle=:dash, linewidth=2, label=L"O(h^{2N+1})")
 
 r2 = (2 * N + 2 + d)
 C = .3 * max_entropy_errors[end] / h[end]^r2

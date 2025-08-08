@@ -180,7 +180,8 @@ function compute_L2_error(sol)
     (; rd, md, amplitude) = sol.prob.p
     L2_error = Float64[]
     for (i, u) in enumerate(sol.u)
-        ptwise_error = rd.Vq * u - initial_condition_density_wave.(md.xq .- 0.1 * sol.t[i], equations; amplitude)
+        ptwise_error = rd.Vq * u - 
+            initial_condition_density_wave.(md.xq .- 0.1 * sol.t[i], equations; amplitude)
         push!(L2_error, sqrt(sum(md.wJq .* norm.(ptwise_error).^2)))
     end
     return L2_error
